@@ -158,7 +158,6 @@ const DOUBLE_LABEL_CONFIG_KEEP_SINGLE: LabelConfig = LabelConfig {
 };
 
 // See when this makes sense, dont think any of their protocols has this (yet)
-#[allow(dead_code)]
 const DOUBLE_LABEL_CONFIG_KEEP_DOUBLE: LabelConfig = LabelConfig {
     include_label: true,
     include_orientation: false,
@@ -226,12 +225,65 @@ static DOUBLE_LABEL_PATTERNS_MAXIMIZE: LazyLock<Vec<Pattern>> = LazyLock::new(||
         pattern_from_str!("Ftag[fw, *, @left(0..250)]__Ftag[fw, *, @prev_left(0..250), >>]"),
         // Weird chimeric pattern, where we have a double Ftag on the right...
         pattern_from_str!(
-            "Ftag[fw, ?1, @left(0..250), >>]__Ftag[<<, fw, ?1, @right(0..250)]__Ftag[rc, *, @right(0..250)]"
+            "Ftag[fw, ?1, @left(0..250)]__Ftag[fw, ?1, @right(0..250), >>]__Ftag[<<, rc, *, @right(0..250)]"
         ),
         // Triple barcode on the left, again we assure inner barcodes are the same
         pattern_from_str!(
             "Ftag[fw, *, @left(0..250)]__Ftag[rc, *, @prev_left(0..250)]__Ftag[fw, ?1, @prev_left(0..250), >>]__Ftag[<<, rc, ?1, @right(0..250)]"
         ),
+    ]
+});
+
+static DOUBLE_DIFFERENT_LABEL_PATTERNS_SAFE: LazyLock<Vec<Pattern>> = LazyLock::new(|| {
+    vec![
+        // Ftag on the left
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]"),
+        // Ftag on the right, then should be rc
+        pattern_from_str!("Ftag[<<, rc, *, @right(0..250)]"),
+        // Rtag on the right (rc)
+        pattern_from_str!("Rtag[<<, rc, *, @right(0..250)]"),
+        // Rtag on the left (fw)
+        pattern_from_str!("Rtag[fw, *, @left(0..250), >>]"),
+        // Double barcode, Ftag left and Rtag right
+        pattern_from_str!("Ftag[fw, @left(0..250), >>]__Rtag[<<, rc, @right(0..250)]"),
+        // Double barcode, Rtag left (fw) and Ftag right (rc)
+        pattern_from_str!("Rtag[fw, @left(0..250), >>]__Ftag[<<, rc, @right(0..250)]"),
+    ]
+});
+
+static DOUBLE_DIFFERENT_LABEL_PATTERNS_MAXIMIZE: LazyLock<Vec<Pattern>> = LazyLock::new(|| {
+    vec![
+        // From safe
+
+        // Ftag on the left
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]"),
+        // Ftag on the right, then should be rc
+        pattern_from_str!("Ftag[<<, rc, *, @right(0..250)]"),
+        // Rtag on the right (rc)
+        pattern_from_str!("Rtag[<<, rc, *, @right(0..250)]"),
+        // Rtag on the left (fw)
+        pattern_from_str!("Rtag[fw, *, @left(0..250), >>]"),
+        // Double barcode, Ftag left and Rtag right
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]__Rtag[<<, rc, *, @right(0..250)]"),
+        // Double barcode, Rtag left (fw) and Ftag right (rc)
+        pattern_from_str!("Rtag[fw, *, @left(0..250), >>]__Ftag[<<, rc, *, @right(0..250)]"),
+        // Additional patterns to maximize matches, accepting flanks mostly
+        pattern_from_str!("Fflank[fw, *, @left(0..250), >>]__Rtag[<<, rc, *, @right(0..250)]"),
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]__Rflank[<<, rc, *, @right(0..250)]"),
+        pattern_from_str!("Rflank[fw, *, @left(0..250), >>]__Ftag[<<, rc, *, @right(0..250)]"),
+        pattern_from_str!("Rtag[fw, *, @left(0..250), >>]__Fflank[<<, rc, *, @right(0..250)]"),
+        // Double left barcode ligation
+        pattern_from_str!("Ftag[fw, *, @left(0..250)]__Ftag[fw, *, @prev_left(0..250), >>]"),
+        // Weird chimeric pattern, where we have a double Ftag on the right...
+        pattern_from_str!(
+            "Ftag[fw, *, @left(0..250)]__Ftag[fw, *, @right(0..250), >>]__Rtag[<<, rc, *, @right(0..250)]"
+        ),
+        // These are quite risky, cause it ignores flank in a sense but in the end we do care about the barcodes
+        // as long as they are reverse compelement it's ok?
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]__Ftag[<<, rc, *, @right(0..250)]"),
+        pattern_from_str!("Ftag[rc, *, @left(0..250), >>]__Ftag[<<, fw, *, @right(0..250)]"),
+        pattern_from_str!("Rtag[fw, *, @left(0..250), >>]__Rtag[<<, rc, *, @right(0..250)]"),
+        pattern_from_str!("Ftag[rc, *, @left(0..250), >>]__Ftag[<<, fw, *, @right(0..250)]"),
     ]
 });
 
@@ -246,6 +298,12 @@ fn double_label_patterns_safe() -> &'static [Pattern] {
 }
 fn double_label_patterns_maximize() -> &'static [Pattern] {
     &DOUBLE_LABEL_PATTERNS_MAXIMIZE
+}
+fn double_different_label_patterns_safe() -> &'static [Pattern] {
+    &DOUBLE_DIFFERENT_LABEL_PATTERNS_SAFE
+}
+fn double_different_label_patterns_maximize() -> &'static [Pattern] {
+    &DOUBLE_DIFFERENT_LABEL_PATTERNS_MAXIMIZE
 }
 
 // Template arrays per kit
@@ -570,9 +628,9 @@ const KIT_PCR12: KitConfig = KitConfig::new(
 // Unique kits
 const KIT_PCR96: KitConfig = KitConfig::new(
     "PCR96",
-    DOUBLE_LABEL_CONFIG_KEEP_SINGLE,
-    double_label_patterns_safe,
-    double_label_patterns_maximize,
+    DOUBLE_LABEL_CONFIG_KEEP_DOUBLE,
+    double_different_label_patterns_safe,
+    double_different_label_patterns_maximize,
     TEMPLATES_PCR96,
 );
 
