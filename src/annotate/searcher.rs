@@ -329,8 +329,7 @@ impl Demuxer {
 
         candidates_buf.clear();
         for (idx, maybe_match) in best_per_pattern_buf.iter_mut().enumerate() {
-            if let Some(mut m) = maybe_match.take() {
-                m.strand = flank_match.strand;
+            if let Some(m) = maybe_match.take() {
                 candidates_buf.push((m, idx));
             }
         }
@@ -379,13 +378,31 @@ impl Demuxer {
         let (pad_start, _pad_end) = barcode_group.pad_region;
         let (bar_start, bar_end) = barcode_group.bar_region;
         let rel_bar_start = bar_start - pad_start;
-        let rel_bar_end = bar_end - pad_start;
+        let rel_bar_end = bar_end - pad_start + 1;
+
+
+        let pat_len = barcode_group.barcodes[scored_buf[0].3].seq.len();
+        let (q_start, q_end) = match flank_match.strand {
+            Strand::Fwd => (rel_bar_start, rel_bar_end),
+            Strand::Rc => (
+                pat_len.saturating_sub(rel_bar_end),
+                pat_len.saturating_sub(rel_bar_start),
+            ),
+        };
 
         let bar_read_region =
-            map_pat_to_text_with_cost(&scored_buf[0].2, rel_bar_start as i32, rel_bar_end as i32);
+            map_pat_to_text_with_cost(&scored_buf[0].2, q_start as i32, q_end as i32);
 
         let ((bar_start, bar_end), (read_bar_start, read_bar_end), bar_cost) =
             bar_read_region.expect("No barcode match region found; unusual");
+
+        let (bar_start, bar_end) = match flank_match.strand {
+            Strand::Fwd => (bar_start, bar_end),
+            Strand::Rc => (
+                pat_len.saturating_sub(bar_end),
+                pat_len.saturating_sub(bar_start),
+            ),
+        };
 
         // Apply fractional thresholds
         let top_norm = scored_buf[0].0;
@@ -408,7 +425,7 @@ impl Demuxer {
                 flank_match.cost,
                 bar_cost as Cost,
                 top_barcode.label.clone(),
-                scored_buf[0].2.strand,
+                flank_match.strand,
                 read_len,
                 read_id.to_string(),
                 rel_dist_to_end(flank_match.text_start as isize, read_len),
