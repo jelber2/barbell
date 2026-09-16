@@ -4,6 +4,12 @@
 
 ## git
 
+- Added:
+  - Adapter trimming for Nanopore ligation ("kit14") libraries such as SQK-LSK114
+    and SQK-ULK114, like Porechop/dorado trim (#5). Use `--adapter-trim` on
+    `barbell trim` / `barbell kit`, or the new standalone `barbell trim-adapters`
+    command.
+
 ## 0.3.3
 
 ## 0.3.2

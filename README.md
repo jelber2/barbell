@@ -31,6 +31,7 @@ If you have any issues or if something is unclear, just create an [issue](https:
   - [Inspect](#inspect)
   - [Filter](#filter)
   - [Trim](#trim)
+  - [Adapter trimming (SQK-LSK114 / SQK-ULK114 and other "kit14" libraries, like Porechop)](#adapter-trimming-sqk-lsk114--sqk-ulk114-and-other-kit14-libraries-like-porechop)
   - [The `--maximize` flag explained in more detail](#the---maximize-flag-explained-in-more-detail-kit-command-only)
 - [Custom experiment](#custom-experiment)
   - [Creating a query Fasta](#creating-a-query-fasta)
@@ -312,6 +313,59 @@ Gives:
 ```
 BC01.trimmed.fastq  BC11.trimmed.fastq ...
 ```
+
+### Adapter trimming (SQK-LSK114 / SQK-ULK114 and other "kit14" libraries, like Porechop)
+
+Ligation-based Nanopore libraries (the "kit14" kits: `SQK-LSK114`, `SQK-ULK114`,
+`SQK-PCS114`, `SQK-RAD114`, `SQK-16S114-24`, `SQK-NBD114-*`, `SQK-PCB114-24`,
+`SQK-RBK114-*`, `SQK-RPB114-24`, `SQK-HTB114-96`, …) all carry the same AMX114
+ligation adapter at both ends of the insert:
+
+```
+5' [adapter] ------------------ insert ------------------ [adapter] 3'
+```
+
+Depending on which strand was captured, the read starts/ends with either the
+adapter (`CCTGTACTTCGTTCAGTTACGTATTGC`) or its reverse complement
+(`GCAATACGTAACTGAACGAAGTACAGG`). This is often only partially present, since
+basecalling can drop the first bases of a read.
+
+Barcode-based trimming (above) cuts at the barcode, so the adapter in front of the
+barcode stays in the read. To also remove that adapter — like
+[Porechop](https://github.com/rrwick/Porechop) and `dorado trim` do — add
+`--adapter-trim`:
+
+```bash
+# as part of the kit pipeline
+barbell kit -k SQK-RBK114-96 -i reads.fastq -o output_folder --maximize --adapter-trim
+```
+
+Adapter trimming was tested on simulated kit14 reads: **~99%** of reads carrying an
+adapter are trimmed correctly, while random/adaptor-free reads are affected in
+well under **0.1%** of cases. Adapters found in the *middle* of a read are
+deliberately ignored (that needs read splitting, not end trimming).
+
+Do you only have (already demultiplexed) reads and want to remove adapters, without
+any demultiplexing? Use the standalone command:
+
+```bash
+# -o can be a file (single input) or a folder (multiple inputs)
+barbell trim-adapters -r reads.fastq -o adapter_trimmed.fastq
+barbell trim-adapters -r '*.fastq.gz' -o adapter_trimmed/ --gzip
+```
+
+Note that this keeps read order and orientation, in contrast to `barbell trim`.
+
+Tuning (defaults work well in practice):
+
+```
+  --adapter-min-match-len <INT>  minimum matching adapter bases    [default: 14]
+  --adapter-min-identity <FLOAT> minimum identity of the alignment [default: 0.75]
+  --adapter-end-slack <INT>      how far the adapter may sit from  [default: 10]
+                                 the very read end
+```
+Lowering `--adapter-min-match-len` picks up more (very short) partial adapters at
+the cost of more false positives; raising it is more conservative.
 
 ### The `--maximize` flag explained in more detail (`kit` command only)
 

@@ -4,6 +4,7 @@ use crate::config::TrimConfig;
 use crate::filter::pattern::{Cut, CutDirection};
 use crate::io::io::{split_fastq_header, validate_fastq_paths};
 use crate::progress::progress::{ProgressTracker, TRIM_PROGRESS_SPECS};
+use crate::trim::adapter::{AdapterTrim, AdapterTrimmer};
 use anyhow::anyhow;
 use csv;
 use flate2::write::GzEncoder;
@@ -254,30 +255,43 @@ pub fn process_read_and_anno(
     label_config: &LabelConfig,
     skip_trim: bool,
     flip: bool,
+    adapter_trim: Option<&AdapterTrim>,
 ) -> Vec<(Vec<u8>, Vec<u8>, String, String)> {
     let mut results = Vec::new();
     let seq_len = seq.len();
+
+    // Adapter trimming and barcode trimming are independent: the cuts refer to
+    // positions in the original read, so the final interval is the intersection of
+    // the barcode cut with the adapter interval. This also takes care of adapter or
+    // barcode positions that would otherwise overlap (or even invert) each other.
+    let (adapter_keep_start, adapter_keep_end) = match adapter_trim {
+        Some(trim) if !trim.is_empty() => (trim.keep_start, trim.keep_end),
+        _ => (0, seq_len),
+    };
 
     // Preprocess cuts to get complete slices
     let slices = preprocess_cuts(annotations, seq_len);
 
     // Group slices by cut group ID
     for (slice_count, slice) in slices.iter().enumerate() {
-        if slice.start >= slice.end {
+        let slice_start = slice.start.max(adapter_keep_start);
+        let slice_end = slice.end.min(adapter_keep_end);
+
+        if slice_start >= slice_end {
             continue;
         }
 
-        // For now if trimming is disabled, we just
-        // return the full sequence and quality
+        // With barcode trimming disabled we return the whole read, but an
+        // explicitly requested adapter trim is still applied.
         let mut trimmed_seq = if skip_trim {
-            seq.to_vec()
+            seq[adapter_keep_start..adapter_keep_end].to_vec()
         } else {
-            seq[slice.start..slice.end].to_vec()
+            seq[slice_start..slice_end].to_vec()
         };
         let mut trimmed_qual = if skip_trim {
-            qual.to_vec()
+            qual[adapter_keep_start..adapter_keep_end].to_vec()
         } else {
-            qual[slice.start..slice.end].to_vec()
+            qual[slice_start..slice_end].to_vec()
         };
 
         if flip && should_flip(&slice.annotations) {
@@ -359,6 +373,11 @@ pub fn trim_matches(
 
     // Create writers regular or gzip write
     let mut writers: HashMap<String, Box<dyn Write>> = HashMap::new();
+    let mut adapter_trimmer = if config.adapter_trim.enabled {
+        Some(AdapterTrimmer::new(config.adapter_trim.clone()))
+    } else {
+        None
+    };
 
     // If there is a failed trimmed writer, create it
     let mut failed_trimmed_writer =
@@ -399,6 +418,11 @@ pub fn trim_matches(
                         .qual()
                         .ok_or_else(|| anyhow!("FASTQ record '{read_id}' has no quality scores"))?;
 
+                    // Trim the ligation adapter from the read ends (if enabled) before
+                    // the barcode/flank cuts are applied.
+                    let adapter_trim = adapter_trimmer
+                        .as_mut()
+                        .and_then(|trimmer| trimmer.find_trim(seq.as_ref()));
                     let results: Vec<(Vec<u8>, Vec<u8>, String, String)> = process_read_and_anno(
                         seq.as_ref(),
                         qual,
@@ -406,6 +430,7 @@ pub fn trim_matches(
                         &label_config,
                         config.skip_trim,
                         config.flip,
+                        adapter_trim.as_ref(),
                     );
 
                     if !results.is_empty() {
@@ -578,7 +603,8 @@ mod tests {
         ];
 
         let label_config = LabelConfig::new(true, true, true, true, None);
-        let results = process_read_and_anno(seq, qual, &annotations, &label_config, false, false);
+        let results =
+            process_read_and_anno(seq, qual, &annotations, &label_config, false, false, None);
 
         assert_eq!(results.len(), 1);
         let (trimmed_seq, trimmed_qual, group_label, _) = &results[0];
@@ -670,7 +696,8 @@ mod tests {
         ];
 
         let label_config = LabelConfig::new(true, true, true, true, None);
-        let results = process_read_and_anno(seq, qual, &annotations, &label_config, false, false);
+        let results =
+            process_read_and_anno(seq, qual, &annotations, &label_config, false, false, None);
 
         assert_eq!(results.len(), 2);
 
@@ -683,6 +710,65 @@ mod tests {
         assert_eq!(trimmed_seq2, b"GG");
         assert_eq!(trimmed_qual2, b"II");
         assert_eq!(label2, "F2_fw__R2_fw");
+    }
+
+    #[test]
+    fn test_adapter_trim_shifts_barcode_cuts() {
+        use crate::trim::adapter::{ADAPTER_SEQUENCE, AdapterTrim};
+
+        // The read has an adapter at the start, followed by the barcode region.
+        // The barcode cuts are relative to the original read, so the adapter has to
+        // be accounted for when applying them.
+        let adapter_len = ADAPTER_SEQUENCE.len();
+        let barcode = b"AAAACCCC";
+        let insert = b"GGGGTTTTGGGGTTTT";
+
+        let mut seq = ADAPTER_SEQUENCE.to_vec();
+        seq.extend_from_slice(barcode);
+        seq.extend_from_slice(insert);
+        let qual: Vec<u8> = vec![b'I'; seq.len()];
+
+        // Barcode spans [adapter_len, adapter_len + 8) in the original read.
+        let bar_start = adapter_len;
+        let bar_end = adapter_len + barcode.len();
+        let annotations = vec![BarbellMatch::new(
+            bar_start,
+            bar_end,
+            bar_start,
+            bar_end,
+            0,
+            barcode.len(),
+            BarcodeType::Ftag,
+            0,
+            0,
+            "Fbar".to_string(),
+            Strand::Fwd,
+            seq.len(),
+            "read1".to_string(),
+            0,
+            Some(vec![(Cut::new(0, CutDirection::After), bar_end)]),
+        )];
+
+        let label_config = LabelConfig::new(true, true, true, true, None);
+        let adapter_trim = AdapterTrim {
+            keep_start: adapter_len,
+            keep_end: seq.len(),
+            sides: [true, false],
+        };
+
+        let results = process_read_and_anno(
+            &seq,
+            &qual,
+            &annotations,
+            &label_config,
+            false,
+            false,
+            Some(&adapter_trim),
+        );
+
+        assert_eq!(results.len(), 1);
+        let (trimmed_seq, _, _, _) = &results[0];
+        assert_eq!(trimmed_seq, insert, "adapter and barcode should be gone");
     }
 
     #[test]
@@ -728,7 +814,8 @@ mod tests {
         ];
 
         let label_config = LabelConfig::new(true, true, true, true, None);
-        let results = process_read_and_anno(seq, qual, &annotations, &label_config, true, false);
+        let results =
+            process_read_and_anno(seq, qual, &annotations, &label_config, true, false, None);
 
         assert_eq!(results.len(), 1);
         let (trimmed_seq, trimmed_qual, group_label, _) = &results[0];
@@ -781,7 +868,8 @@ mod tests {
         ];
 
         let label_config = LabelConfig::new(true, true, true, true, None);
-        let results = process_read_and_anno(seq, qual, &annotations, &label_config, false, true);
+        let results =
+            process_read_and_anno(seq, qual, &annotations, &label_config, false, true, None);
 
         assert_eq!(results.len(), 1);
         let (trimmed_seq, trimmed_qual, group_label, _) = &results[0];
@@ -791,7 +879,8 @@ mod tests {
         assert_eq!(group_label, "Fbar_rc__Rbar_fw");
 
         annotations[0].strand = Strand::Fwd;
-        let results = process_read_and_anno(seq, qual, &annotations, &label_config, false, true);
+        let results =
+            process_read_and_anno(seq, qual, &annotations, &label_config, false, true, None);
         let (trimmed_seq, trimmed_qual, group_label, _) = &results[0];
         println!("trimmed_seq: {}", String::from_utf8_lossy(trimmed_seq));
         assert_eq!(trimmed_seq, b"AGGC");
